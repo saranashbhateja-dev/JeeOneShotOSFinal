@@ -1,0 +1,94 @@
+name: Build Jee OneShot OS APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Verify repository root
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in package.json index.html app.js one-shots.json capacitor.config.json; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error::Required file missing at repository root: $file"
+              echo "Upload the contents of this folder to the repository root, not a nested folder."
+              exit 1
+            fi
+          done
+
+      - name: Install Capacitor Android dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Install the Android platform explicitly so a stale or incomplete package lock
+          # cannot leave @capacitor/android missing in the following validation step.
+          rm -rf node_modules
+          npm install --no-audit --no-fund --no-save \
+            '@capacitor/core@^8' \
+            '@capacitor/cli@^8' \
+            '@capacitor/android@^8'
+          npm ls @capacitor/core @capacitor/cli @capacitor/android
+          # @capacitor/android is a native platform package, not a Node.js entry module.
+          # Check that its package files exist; do not require.resolve() its package root.
+          node -e "require.resolve('@capacitor/core'); require.resolve('@capacitor/cli'); const fs=require('node:fs'); if(!fs.existsSync('node_modules/@capacitor/android/package.json')) throw new Error('@capacitor/android package files are missing'); console.log('@capacitor/android package files present')"
+
+      - name: Prepare mobile web assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf www
+          mkdir -p www
+          cp index.html app.js one-shots.json www/
+          test -s www/index.html
+          test -s www/app.js
+          test -s www/one-shots.json
+
+      - name: Check Capacitor configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "JSON.parse(require('node:fs').readFileSync('capacitor.config.json','utf8'))"
+          node -e "require.resolve('@capacitor/core'); require.resolve('@capacitor/cli'); const fs=require('node:fs'); if(!fs.existsSync('node_modules/@capacitor/android/package.json')) throw new Error('@capacitor/android package files are missing')"
+
+      - name: Create Android project
+        run: npx --no-install cap add android
+
+      - name: Sync web assets
+        run: npx --no-install cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jee-OneShot-OS-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
